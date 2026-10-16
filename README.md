@@ -40,7 +40,7 @@ El programa espera `assets/nave.obj` relativo al directorio de ejecución. Se pu
 
 El lector propio procesa líneas `v`, `f` y `usemtl`. En cada referencia de cara toma el componente anterior a `/`, admite `v`, `v/vt/vn`, `v//vn`, índices OBJ positivos desde 1 e índices negativos relativos al final de la lista. Los convierte a índices C++ desde 0 y valida que apunten a un vértice existente. Para este archivo las 196 caras son triangulares.
 
-`render()` recorre explícitamente las caras; obtiene los tres vértices por sus índices y llama a `triangle()`. La proyección ortográfica usa una cámara elevada en tres cuartos. Se proyectan todos los vértices primero para obtener la caja completa, luego se calcula una escala uniforme y un desplazamiento central dejando 50 píxeles de margen. El rasterizador recorta el rectángulo de cada triángulo a la pantalla, calcula coordenadas baricéntricas y usa un z-buffer por píxel. La paleta se asigna según `Rojo`, `Gris_oscuro` y `Amarillo`, sin cargar MTL.
+`render()` recorre explícitamente las caras; obtiene los tres vértices por sus índices y llama a `triangle()`. La proyección ortográfica usa una cámara elevada en tres cuartos. Se proyectan todos los vértices primero para obtener la caja completa, luego se calcula una escala uniforme y un desplazamiento central dejando 50 píxeles de margen. El rasterizador recorta el rectángulo de cada triángulo a la pantalla, calcula coordenadas baricéntricas y usa un z-buffer por píxel. Cada cara recibe luz difusa según su normal; además, se lanza un rayo desde su centro hacia una luz direccional. Si otra cara lo bloquea, esa faceta recibe menos luz y forma una sombra dura. La paleta se asigna según `Rojo`, `Gris_oscuro` y `Amarillo`, sin cargar MTL.
 
 ## Controles
 

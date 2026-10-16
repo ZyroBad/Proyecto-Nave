@@ -28,11 +28,48 @@ Vec3 sub(Vec3 a,Vec3 b){return {a.x-b.x,a.y-b.y,a.z-b.z};}
 Vec3 cross(Vec3 a,Vec3 b){return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};}
 Vec3 norm(Vec3 a){float n=std::sqrt(a.x*a.x+a.y*a.y+a.z*a.z);return {a.x/n,a.y/n,a.z/n};}
 float dot(Vec3 a,Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
+Vec3 add(Vec3 a,Vec3 b){return {a.x+b.x,a.y+b.y,a.z+b.z};}
+Vec3 mul(Vec3 a,float s){return {a.x*s,a.y*s,a.z*s};}
 Color materialColor(const std::string& name){
     if(name=="Rojo") return {211,69,67,255};
     if(name=="Gris_oscuro") return {82,101,124,255};
     if(name=="Amarillo") return {246,190,67,255};
     return {160,177,199,255};
+}
+bool rayHitsTriangle(Vec3 origin,Vec3 direction,Vec3 a,Vec3 b,Vec3 c){
+    const Vec3 edge1=sub(b,a),edge2=sub(c,a);
+    const Vec3 p=cross(direction,edge2);const float determinant=dot(edge1,p);
+    if(std::abs(determinant)<1e-6f)return false;
+    const float inverse=1.0f/determinant;const Vec3 offset=sub(origin,a);
+    const float u=dot(offset,p)*inverse;if(u<0.0f||u>1.0f)return false;
+    const Vec3 q=cross(offset,edge1);const float v=dot(direction,q)*inverse;
+    if(v<0.0f||u+v>1.0f)return false;
+    return dot(edge2,q)*inverse>1e-3f;
+}
+bool isInShadow(const ObjModel& model,std::size_t sourceFace,Vec3 origin,Vec3 lightDirection){
+    // Probamos si otra cara de la nave intercepta el rayo desde esta cara hacia la luz.
+    for(std::size_t i=0;i<model.faces.size();++i){
+        if(i==sourceFace)continue;
+        const Face& face=model.faces[i];
+        if(rayHitsTriangle(origin,lightDirection,model.vertices[face.vertex[0]],model.vertices[face.vertex[1]],model.vertices[face.vertex[2]]))return true;
+    }
+    return false;
+}
+Color litColor(Color base,const ObjModel& model,std::size_t faceIndex,Vec3 lightDirection){
+    const Face& face=model.faces[faceIndex];
+    const Vec3 a=model.vertices[face.vertex[0]],b=model.vertices[face.vertex[1]],c=model.vertices[face.vertex[2]];
+    const Vec3 crossNormal=cross(sub(b,a),sub(c,a));
+    const float normalLength=std::sqrt(dot(crossNormal,crossNormal));
+    if(normalLength<1e-6f)return base;
+    const Vec3 normal=mul(crossNormal,1.0f/normalLength);
+    const Vec3 center=mul(add(add(a,b),c),1.0f/3.0f);
+    // Una luz ambiental conserva detalle en sombra; la luz difusa da volumen a cada faceta.
+    const bool shadowed=isInShadow(model,faceIndex,add(center,mul(lightDirection,1e-3f)),lightDirection);
+    const float diffuse=std::max(0.0f,dot(normal,lightDirection));
+    const float direct=shadowed?diffuse*0.12f:diffuse;
+    const float illumination=0.26f+0.74f*direct;
+    auto shade=[&](std::uint8_t channel){return static_cast<std::uint8_t>(std::clamp(channel*illumination,0.0f,255.0f));};
+    return {shade(base.r),shade(base.g),shade(base.b),base.a};
 }
 void append32(std::vector<std::uint8_t>& out,std::uint32_t n){out.push_back(n>>24);out.push_back(n>>16);out.push_back(n>>8);out.push_back(n);}
 std::uint32_t crc32(const std::uint8_t* p,std::size_t n){std::uint32_t c=0xffffffffu;for(std::size_t i=0;i<n;++i){c^=p[i];for(int b=0;b<8;++b)c=(c>>1)^((c&1)?0xedb88320u:0);}return c^0xffffffffu;}
@@ -53,6 +90,7 @@ void render(const ObjModel& model,Framebuffer& fb,const Camera& camera){
                    std::sin(camera.pitch)};
     const Vec3 forward=norm(sub(target,eye));
     const Vec3 right=norm(cross(forward,{0,0,1})); const Vec3 up=cross(right,forward);
+    const Vec3 lightDirection=norm({-0.35f,-0.55f,0.76f});
     float minX=1e30f,maxX=-1e30f,minY=1e30f,maxY=-1e30f;
     for(const auto& v:model.vertices){const float x=dot(v,right),y=dot(v,up);minX=std::min(minX,x);maxX=std::max(maxX,x);minY=std::min(minY,y);maxY=std::max(maxY,y);}
     const float scale=std::min((fb.width()-100)/(maxX-minX),(fb.height()-100)/(maxY-minY))*camera.zoom;
@@ -60,7 +98,7 @@ void render(const ObjModel& model,Framebuffer& fb,const Camera& camera){
     auto project=[&](Vec3 p){return ScreenVertex{fb.width()*0.5f+(dot(p,right)-cx)*scale,fb.height()*0.5f-(dot(p,up)-cy)*scale,dot(p,forward)};};
     fb.clear(background);
     // Recorremos cada cara, recuperamos sus tres vértices ya convertidos a índices desde cero y rasterizamos.
-    for(const Face& face:model.faces){const Vec3& a=model.vertices[face.vertex[0]];const Vec3& b=model.vertices[face.vertex[1]];const Vec3& c=model.vertices[face.vertex[2]];triangle(fb,project(a),project(b),project(c),materialColor(face.material));}
+    for(std::size_t i=0;i<model.faces.size();++i){const Face& face=model.faces[i];const Vec3& a=model.vertices[face.vertex[0]];const Vec3& b=model.vertices[face.vertex[1]];const Vec3& c=model.vertices[face.vertex[2]];triangle(fb,project(a),project(b),project(c),litColor(materialColor(face.material),model,i,lightDirection));}
 }
 }
 
