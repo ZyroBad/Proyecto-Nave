@@ -19,6 +19,11 @@
 namespace {
 constexpr int W=960, H=720;
 const Color background{12,17,29,255};
+struct Camera {
+    float yaw = std::atan2(-10.0f, 8.0f);
+    float pitch = std::atan2(8.0f, std::sqrt(8.0f*8.0f + 10.0f*10.0f));
+    float zoom = 1.0f;
+};
 Vec3 sub(Vec3 a,Vec3 b){return {a.x-b.x,a.y-b.y,a.z-b.z};}
 Vec3 cross(Vec3 a,Vec3 b){return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};}
 Vec3 norm(Vec3 a){float n=std::sqrt(a.x*a.x+a.y*a.y+a.z*a.z);return {a.x/n,a.y/n,a.z/n};}
@@ -41,12 +46,16 @@ bool savePng(const std::string& path,const Framebuffer& fb){
     std::vector<std::uint8_t> png{137,80,78,71,13,10,26,10};std::vector<std::uint8_t> ihdr;append32(ihdr,fb.width());append32(ihdr,fb.height());ihdr.insert(ihdr.end(),{8,6,0,0,0});chunk(png,"IHDR",ihdr);chunk(png,"IDAT",z);chunk(png,"IEND",{});
     std::ofstream out(path,std::ios::binary);out.write(reinterpret_cast<const char*>(png.data()),static_cast<std::streamsize>(png.size()));return static_cast<bool>(out);
 }
-void render(const ObjModel& model,Framebuffer& fb){
-    const Vec3 target{0,0,0}; const Vec3 forward=norm(sub(target,{8,-10,8}));
+void render(const ObjModel& model,Framebuffer& fb,const Camera& camera){
+    const Vec3 target{0,0,0};
+    const Vec3 eye{std::cos(camera.pitch)*std::cos(camera.yaw),
+                   std::cos(camera.pitch)*std::sin(camera.yaw),
+                   std::sin(camera.pitch)};
+    const Vec3 forward=norm(sub(target,eye));
     const Vec3 right=norm(cross(forward,{0,0,1})); const Vec3 up=cross(right,forward);
     float minX=1e30f,maxX=-1e30f,minY=1e30f,maxY=-1e30f;
     for(const auto& v:model.vertices){const float x=dot(v,right),y=dot(v,up);minX=std::min(minX,x);maxX=std::max(maxX,x);minY=std::min(minY,y);maxY=std::max(maxY,y);}
-    const float scale=std::min((fb.width()-100)/(maxX-minX),(fb.height()-100)/(maxY-minY));
+    const float scale=std::min((fb.width()-100)/(maxX-minX),(fb.height()-100)/(maxY-minY))*camera.zoom;
     const float cx=(minX+maxX)*0.5f,cy=(minY+maxY)*0.5f;
     auto project=[&](Vec3 p){return ScreenVertex{fb.width()*0.5f+(dot(p,right)-cx)*scale,fb.height()*0.5f-(dot(p,up)-cy)*scale,dot(p,forward)};};
     fb.clear(background);
@@ -61,15 +70,43 @@ int main(int argc,char** argv){
     const std::string output=argc>3?argv[3]:"docs/render.png";
     ObjModel model;std::string error;if(!loadObj(input,model,error)){std::cerr<<error<<'\n';return 1;}
     std::cout<<"Cargados "<<model.vertices.size()<<" vértices y "<<model.faces.size()<<" triángulos.\n";
-    Framebuffer fb(W,H,background);render(model,fb);
+    Framebuffer fb(W,H,background);Camera camera;render(model,fb,camera);
     if(headless){if(!savePng(output,fb)){std::cerr<<"No se pudo escribir: "<<output<<'\n';return 1;}std::cout<<"Imagen guardada en "<<output<<'\n';return 0;}
 #if NAVE_HAS_SDL2
     if(SDL_Init(SDL_INIT_VIDEO)!=0){std::cerr<<"SDL_Init: "<<SDL_GetError()<<'\n';return 1;}
-    SDL_Window* window=SDL_CreateWindow("Nave espacial - rasterizador CPU",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,W,H,SDL_WINDOW_SHOWN);
+    SDL_Window* window=SDL_CreateWindow("Nave espacial - rasterizador CPU",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,W,H,SDL_WINDOW_SHOWN|SDL_WINDOW_RESIZABLE);
+    if(window) SDL_SetWindowMinimumSize(window,640,480);
     SDL_Renderer* renderer=window?SDL_CreateRenderer(window,-1,SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC):nullptr;
     SDL_Texture* texture=renderer?SDL_CreateTexture(renderer,SDL_PIXELFORMAT_RGBA32,SDL_TEXTUREACCESS_STREAMING,W,H):nullptr;
     if(!window||!renderer||!texture){std::cerr<<"SDL: "<<SDL_GetError()<<'\n';if(texture)SDL_DestroyTexture(texture);if(renderer)SDL_DestroyRenderer(renderer);if(window)SDL_DestroyWindow(window);SDL_Quit();return 1;}
-    bool running=true;while(running){SDL_Event e;while(SDL_PollEvent(&e))if(e.type==SDL_QUIT||(e.type==SDL_KEYDOWN&&e.key.keysym.sym==SDLK_ESCAPE))running=false;SDL_UpdateTexture(texture,nullptr,fb.pixels().data(),W*sizeof(Color));SDL_RenderClear(renderer);SDL_RenderCopy(renderer,texture,nullptr,nullptr);SDL_RenderPresent(renderer);}
+    if(SDL_RenderSetLogicalSize(renderer,W,H)!=0){std::cerr<<"SDL_RenderSetLogicalSize: "<<SDL_GetError()<<'\n';SDL_DestroyTexture(texture);SDL_DestroyRenderer(renderer);SDL_DestroyWindow(window);SDL_Quit();return 1;}
+    bool running=true, dragging=false, dirty=true;
+    while(running){
+        SDL_Event e;
+        while(SDL_PollEvent(&e)){
+            if(e.type==SDL_QUIT) running=false;
+            else if(e.type==SDL_KEYDOWN){
+                if(e.key.keysym.sym==SDLK_ESCAPE) running=false;
+                else if(e.key.keysym.sym==SDLK_r){camera=Camera{};render(model,fb,camera);dirty=true;}
+            } else if(e.type==SDL_WINDOWEVENT && (e.window.event==SDL_WINDOWEVENT_SIZE_CHANGED || e.window.event==SDL_WINDOWEVENT_RESTORED || e.window.event==SDL_WINDOWEVENT_MAXIMIZED)) dirty=true;
+            else if(e.type==SDL_MOUSEBUTTONDOWN && e.button.button==SDL_BUTTON_LEFT) dragging=true;
+            else if(e.type==SDL_MOUSEBUTTONUP && e.button.button==SDL_BUTTON_LEFT) dragging=false;
+            else if(e.type==SDL_MOUSEMOTION && dragging){
+                camera.yaw+=e.motion.xrel*0.008f;
+                camera.pitch=std::clamp(camera.pitch+e.motion.yrel*0.008f,-1.35f,1.35f);
+                render(model,fb,camera);dirty=true;
+            } else if(e.type==SDL_MOUSEWHEEL){
+                const int direction=e.wheel.direction==SDL_MOUSEWHEEL_FLIPPED?-1:1;
+                camera.zoom=std::clamp(camera.zoom*std::pow(1.12f,static_cast<float>(direction*e.wheel.y)),0.55f,3.0f);
+                render(model,fb,camera);dirty=true;
+            }
+        }
+        if(dirty){
+            SDL_UpdateTexture(texture,nullptr,fb.pixels().data(),W*sizeof(Color));
+            SDL_RenderClear(renderer);SDL_RenderCopy(renderer,texture,nullptr,nullptr);SDL_RenderPresent(renderer);dirty=false;
+        }
+        SDL_Delay(8);
+    }
     SDL_DestroyTexture(texture);SDL_DestroyRenderer(renderer);SDL_DestroyWindow(window);SDL_Quit();
 #else
     std::cerr<<"Este ejecutable no tiene SDL2; usa --render para generar la imagen o instala SDL2 y recompila.\n";return 2;
